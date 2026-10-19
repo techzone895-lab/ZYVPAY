@@ -1,121 +1,214 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+import 'dart:convert';
 
-void main() {
-  runApp(const MyApp());
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:zyv_sms/zyv_sms.dart';
+
+/// ZYVPAY SMS Gateway.
+///
+/// Runs on the operator's own phone with the ZYVPAY service SIM. It relays the
+/// ZP1 SMS that users send to the backend, and sends the backend's reply SMS back.
+/// This is service infrastructure the operator controls — it only ever replies to
+/// numbers that first messaged this SIM.
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const GatewayApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class GatewayApp extends StatelessWidget {
+  const GatewayApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      title: 'ZYVPAY Gateway',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(useMaterial3: true, colorSchemeSeed: const Color(0xFF4A2FBD)),
+      home: const GatewayHome(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class GatewayHome extends StatefulWidget {
+  const GatewayHome({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<GatewayHome> createState() => _GatewayHomeState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _GatewayHomeState extends State<GatewayHome> {
+  final _url = TextEditingController();
+  final _token = TextEditingController();
+  final _log = <String>[];
+  SharedPreferences? _prefs;
+  StreamSubscription<IncomingSms>? _sub;
+  Timer? _poll;
+  bool _running = false;
+  int _inCount = 0;
+  int _outCount = 0;
 
-  void _incrementCounter() {
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    _prefs = await SharedPreferences.getInstance();
+    _url.text = _prefs!.getString('url') ?? '';
+    _token.text = _prefs!.getString('token') ?? '';
+    setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    _poll?.cancel();
+    _url.dispose();
+    _token.dispose();
+    super.dispose();
+  }
+
+  void _add(String line) {
+    final ts = TimeOfDay.now().format(context);
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _log.insert(0, '$ts  $line');
+      if (_log.length > 200) _log.removeLast();
     });
+  }
+
+  Map<String, String> get _headers => {'Content-Type': 'application/json', 'X-Gateway-Token': _token.text.trim()};
+  Uri _uri(String path) => Uri.parse('${_url.text.trim()}$path');
+
+  Future<void> _start() async {
+    final grants = await [Permission.sms].request();
+    if (grants[Permission.sms] != PermissionStatus.granted) {
+      _add('SMS permission chahiye.');
+      return;
+    }
+    await _prefs!.setString('url', _url.text.trim());
+    await _prefs!.setString('token', _token.text.trim());
+
+    _sub = ZyvSms.incoming.listen((m) => _forward(m.from, m.body));
+    for (final m in await ZyvSms.drain()) {
+      _forward(m.from, m.body);
+    }
+    _poll = Timer.periodic(const Duration(seconds: 5), (_) => _drainOutbox());
+    setState(() => _running = true);
+    _add('Gateway shuru. Incoming SMS sun raha hai.');
+    _drainOutbox();
+  }
+
+  void _stop() {
+    _sub?.cancel();
+    _poll?.cancel();
+    setState(() => _running = false);
+    _add('Gateway band.');
+  }
+
+  Future<void> _forward(String from, String body) async {
+    try {
+      final res = await http.post(_uri('/gateway/inbound'), headers: _headers, body: jsonEncode({'from': from, 'body': body}));
+      if (res.statusCode == 200) {
+        final outcome = (jsonDecode(res.body) as Map)['outcome'];
+        setState(() => _inCount++);
+        _add('IN  $from  →  $outcome');
+        _drainOutbox();
+      } else {
+        _add('IN  $from  HTTP ${res.statusCode}');
+      }
+    } catch (e) {
+      _add('IN  forward fail: $e');
+    }
+  }
+
+  Future<void> _drainOutbox() async {
+    try {
+      final res = await http.get(_uri('/gateway/outbox?limit=10'), headers: _headers);
+      if (res.statusCode != 200) return;
+      final msgs = (jsonDecode(res.body) as Map)['messages'] as List;
+      for (final m in msgs) {
+        final id = m['id'];
+        final err = await ZyvSms.send(m['to'] as String, m['body'] as String);
+        await http.post(_uri('/gateway/outbox/$id/ack'), headers: _headers, body: jsonEncode({'ok': err == null, 'error': err}));
+        if (err == null) {
+          setState(() => _outCount++);
+          _add('OUT ${m['to']}  sent');
+        } else {
+          _add('OUT ${m['to']}  $err');
+        }
+      }
+    } catch (e) {
+      _add('OUT drain fail: $e');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
-          children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+        title: const Text('ZYVPAY Gateway'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: Chip(
+              label: Text(_running ? 'Running' : 'Stopped'),
+              backgroundColor: (_running ? Colors.green : Colors.grey).withValues(alpha: 0.2),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          TextField(controller: _url, enabled: !_running, decoration: const InputDecoration(labelText: 'Backend URL', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          TextField(controller: _token, enabled: !_running, obscureText: true, decoration: const InputDecoration(labelText: 'Gateway token', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(child: _Stat(label: 'Inbound', value: _inCount)),
+            Expanded(child: _Stat(label: 'Replies sent', value: _outCount)),
+          ]),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: _running ? _stop : _start,
+            icon: Icon(_running ? Icons.stop : Icons.play_arrow),
+            label: Text(_running ? 'Stop gateway' : 'Start gateway'),
+          ),
+          const SizedBox(height: 12),
+          const Align(alignment: Alignment.centerLeft, child: Text('Log', style: TextStyle(fontWeight: FontWeight.bold))),
+          const SizedBox(height: 6),
+          Expanded(
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(10)),
+              child: ListView(children: _log.map((l) => Text(l, style: const TextStyle(fontFamily: 'monospace', fontSize: 12))).toList()),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+class _Stat extends StatelessWidget {
+  const _Stat({required this.label, required this.value});
+  final String label;
+  final int value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(children: [
+          Text('$value', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ]),
       ),
     );
   }
