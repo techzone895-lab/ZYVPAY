@@ -43,6 +43,7 @@ dependencies:
   shared_preferences: ^2.5.6
   zyv_sms:
     path: ../packages/zyv_sms
+  url_launcher: ^6.3.3
 
 dev_dependencies:
   flutter_test:
