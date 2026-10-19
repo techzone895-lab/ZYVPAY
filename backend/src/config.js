@@ -6,6 +6,8 @@ function int(name, def) {
 module.exports = {
   port: int('PORT', 8080),
   databaseUrl: process.env.DATABASE_URL || 'postgres://localhost:5432/zyvpay',
+  // All ZYVPAY tables live in this schema, so the backend can share a database.
+  dbSchema: process.env.DB_SCHEMA || 'zyvpay',
   gatewayToken: process.env.GATEWAY_TOKEN || '',
   adminToken: process.env.ADMIN_TOKEN || '',
   // Phone number of the SIM inside the gateway phone. The app sends SMS here.
