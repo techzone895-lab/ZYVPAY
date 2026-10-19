@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZYVPAY</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0b1220">
+<style>
+:root{--bg:#0b1220;--card:#141d33;--ink:#e8eefc;--mut:#8b9ac0;--ok:#22d3a0;--bad:#ff6b6b;--line:#24304f}
+@media (prefers-color-scheme:light){:root{--bg:#f2f5fb;--card:#fff;--ink:#0b1220;--mut:#5a6785;--line:#dbe2f0}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px system-ui,sans-serif}
+main{max-width:480px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}
+h1{font-size:20px;margin:0}.bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+#net{font-size:12px;padding:4px 10px;border-radius:99px;border:1px solid var(--line)}
+.bal{font-size:38px;font-weight:700;margin:6px 0}.mut{color:var(--mut);font-size:13px}
+.row{display:flex;gap:10px}.row>*{flex:1}
+button{background:var(--ok);color:#06251c;border:0;border-radius:12px;padding:13px;font-size:16px;font-weight:600;cursor:pointer}
+button.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+input,textarea{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--ink);font-size:16px;margin:8px 0}
+#qr{background:#fff;padding:12px;border-radius:12px;display:flex;justify-content:center}
+#qr svg,#qr img{width:100%;max-width:300px;height:auto}
+video{width:100%;border-radius:12px;background:#000}
+.tx{display:flex;justify-content:space-between;padding:10px 0;border-top:1px solid var(--line)}
+.in{color:var(--ok)}.out{color:var(--bad)}
+#msg{position:fixed;left:16px;right:16px;bottom:16px;max-width:448px;margin:auto;padding:14px;border-radius:12px;background:var(--card);border:1px solid var(--line);display:none}
+.hide{display:none}
+</style>
+</head>
+<body>
+<main>
+  <div class="bar"><h1>ZYVPAY</h1><span id="net"></span></div>
+
+  <section id="home">
+    <div class="card">
+      <div class="mut" id="who"></div>
+      <div class="bal" id="bal">₹0</div>
+      <div class="mut">Offline limit: balance max ₹5,000 · ek payment max ₹2,000</div>
+    </div>
+    <div class="row" style="margin-bottom:14px">
+      <button id="bSend">Pay (QR banao)</button>
+      <button id="bRecv" class="alt">Receive (scan)</button>
+    </div>
+    <button id="bTop" class="alt" style="width:100%;margin-bottom:14px">+ Paise load karo (demo)</button>
+    <div class="card"><b>History</b><div id="hist"></div></div>
+    <div class="mut" id="sync"></div>
+  </section>
+
+  <section id="send" class="hide card">
+    <b>Payment bhejo</b>
+    <input id="amt" type="number" inputmode="decimal" placeholder="Amount ₹" min="1">
+    <button id="mk" style="width:100%">QR banao</button>
+    <div id="qrBox" class="hide">
+      <p class="mut">Receiver ko ye QR scan karwao. Paise abhi se kat gaye hain.</p>
+      <div id="qr"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="done">Ho gaya</button>
+        <button id="cancel" class="alt">Cancel (refund)</button>
+      </div>
+    </div>
+    <button class="alt back" style="width:100%;margin-top:10px">Wapas</button>
+  </section>
+
+  <section id="recv" class="hide card">
+    <b>Payment receive karo</b>
+    <video id="vid" playsinline muted></video>
+    <textarea id="paste" rows="3" placeholder="Camera nahi chal raha? QR ka text yahan paste karo"></textarea>
+    <button id="acc" style="width:100%">Verify karke accept karo</button>
+    <button class="alt back" style="width:100%;margin-top:10px">Wapas</button>
+  </section>
+</main>
+<div id="msg"></div>
+<script src="lib/qrcode.js"></script>
+<script src="lib/jsQR.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
